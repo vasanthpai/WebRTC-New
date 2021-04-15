@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<!--
+ *  Copyright (c) 2015 The WebRTC project authors. All Rights Reserved.
+ *
+ *  Use of this source code is governed by a BSD-style license
+ *  that can be found in the LICENSE file in the root of the source
+ *  tree.
+-->
+<html>
+
+<head>
+
+    <meta charset="utf-8">
+    <meta name="description" content="WebRTC code samples">
+    <meta name="viewport" content="width=device-width, user-scalable=yes, initial-scale=1, maximum-scale=1">
+    <meta itemprop="description" content="Client-side WebRTC code samples">
+    <meta itemprop="image" content="../../../images/webrtc-icon-192x192.png">
+    <meta itemprop="name" content="WebRTC code samples">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta id="theme-color" name="theme-color" content="#ffffff">
+
+    <base target="_blank">
+
+    <title>Peer connection</title>
+
+    <link rel="icon" sizes="192x192" href="../../../images/webrtc-icon-192x192.png">
+    <link href="//fonts.googleapis.com/css?family=Roboto:300,400,500,700" rel="stylesheet" type="text/css">
+    <link rel="stylesheet" href="../../../css/main.css" />
+    <link rel="stylesheet" href="css/main.css" />
+
+</head>
+
+<body>
+
+    <div id="container">
+        <h1><a href="//webrtc.github.io/samples/" title="WebRTC samples homepage">WebRTC samples</a>
+            <span>Peer connection</span>
+        </h1>
+
+        <p>This sample shows how to setup a connection between two peers using
+            <a href="https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection">RTCPeerConnection</a>.
+        </p>
+
+        <video id="localVideo" playsinline autoplay muted></video>
+        <video id="remoteVideo" playsinline autoplay></video>
+
+        <div class="box">
+            <input type="email" id="usernameInput" c lass="form-control formgroup" placeholder="Login" required=""
+                autofocus="">
+            <button id="startButton">Start</button>
+            <input id="callToUsernameInput" type="text" placeholder="username to call" />
+            <button id="callButton">Call</button>
+            <button id="hangupButton">Hang Up</button>
+        </div>
+
+        <p>View the console to see logging. The <code>MediaStream</code> object <code>localStream</code>, and the
+            <code>RTCPeerConnection</code>
+            objects <code>pc1</code> and <code>pc2</code> are in global scope, so you can inspect them in the console as
+            well.
+        </p>
+
+        <p>For more information about RTCPeerConnection, see <a
+                href="http://www.html5rocks.com/en/tutorials/webrtc/basics/"
+                title="HTML5 Rocks article about WebRTC by Sam Dutton">Getting
+                Started With WebRTC</a>.</p>
+
+
+        <a href="https://github.com/webrtc/samples/tree/gh-pages/src/content/peerconnection/pc1"
+            title="View source for this page on GitHub" id="viewSource">View source on GitHub</a>
+
+    </div>
+    <script>
+
+        var name;
+        var connectedUser;
+
+        //connecting to our signaling server
+        var conn = new WebSocket(location.origin.replace(/^http/, 'ws'));
+
+        conn.onopen = function () {
+            log("Connected to the signaling server");
+        };
+
+        //when we got a message from a signaling server 
+        conn.onmessage = function (msg) {
+            log("Got message", msg.data);
+
+            var data = JSON.parse(msg.data);
+
+            switch (data.type) {
+                case "login":
+                    handleLogin(data.success);
+                    break;
+                //when somebody wants to call us 
+                case "offer":
+                    handleOffer(data.offer, data.name);
+                    break;
+                case "answer":
+                    handleAnswer(data.answer);
+                    break;
+                //when a remote peer sends an ice candidate to us 
+                case "candidate":
+                    handleCandidate(data.candidate);
+                    break;
+                case "leave":
+                    handleLeave();
+                    break;
+                default:
+                    break;
+            }
+        };
+
+        conn.onerror = function (err) {
+            log("Got error", err);
+        };
+
+        //alias for sending JSON encoded messages 
+        function send(message) {
+            //attach the other peer username to our messages 
+            if (connectedUser) {
+                message.name = connectedUser;
+            }
+
+            conn.send(JSON.stringify(message));
+        };
+        /*
+     *  Copyright (c) 2015 The WebRTC project authors. All Rights Reserved.
+     *
+     *  Use of this source code is governed by a BSD-style license
+     *  that can be found in the LICENSE file in the root of the source
+     *  tree.
+     */
+
+        'use strict';
+
+
+
+        const startButton = document.getElementById('startButton');
+        const callButton = document.getElementById('callButton');
+        const hangupButton = document.getElementById('hangupButton');
+        // const callButton = document.getElementById('callButton');
+        // const hangupButton = document.getElementById('hangupButton');
+        callButton.disabled = true;
+        hangupButton.disabled = true;
+        startButton.addEventListener('click', start);
+        callButton.addEventListener('click', call);
+        hangupButton.addEventListener('click', hangup);
+
+        let startTime;
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+
+        function log(text) {
+            var time = new Date();
+
+            console.log("[" + time.toLocaleTimeString() + "] " + text);
+        }
+
+        localVideo.addEventListener('loadedmetadata', function () {
+            log(`Local video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
+        });
+
+        remoteVideo.addEventListener('loadedmetadata', function () {
+            log(`Remote video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
+        });
+
+        remoteVideo.addEventListener('resize', () => {
+            log(`Remote video size changed to ${remoteVideo.videoWidth}x${remoteVideo.videoHeight}`);
+            // We'll use the first onsize callback as an indication that video has started
+            // playing out.
+            if (startTime) {
+                const elapsedTime = window.performance.now() - startTime;
+                log('Setup time: ' + elapsedTime.toFixed(3) + 'ms');
+                startTime = null;
+            }
+        });
+
+        let localStream;
+        let pc1;
+        // let pc2;
+        const offerOptions = {
+            offerToReceiveAudio: 1,
+            offerToReceiveVideo: 1
+        };
+
+        function getName(pc) {
+            return (pc === pc1) ? 'pc1' : 'pc2';
+        }
+
+        // function getOtherPc(pc) {
+        //     return (pc === pc1) ? pc2 : pc1;
+        // }
+
+        async function start() {
+
+            name = usernameInput.value;
+
+            if (name.length > 0) {
+                send({
+                    type: "login",
+                    name: name
+                });
+            }
+
+        }
+
+        async function handleLogin(success) {
+            if (success === false) {
+                alert("Ooops...try a different username");
+            } else {
+                log('Requesting local stream');
+                startButton.disabled = true;
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                    log('Received local stream');
+                    localVideo.srcObject = stream;
+                    localStream = stream;
+                    callButton.disabled = false;
+
+                    startTime = window.performance.now();
+                    const videoTracks = localStream.getVideoTracks();
+                    const audioTracks = localStream.getAudioTracks();
+                    if (videoTracks.length > 0) {
+                        log(`Using video device: ${videoTracks[0].label}`);
+                    }
+                    if (audioTracks.length > 0) {
+                        log(`Using audio device: ${audioTracks[0].label}`);
+                    }
+                    const configuration = {
+                        "iceServers": [{ "url": "stun:stun.l.google.com:19302" }]
+                    };
+
+                    console.log(configuration)
+
+
+                    // 'urls': [
+                    //     'stun:stun.l.google.com:19302',
+                    //     'stun:stun1.l.google.com:19302',
+                    //     'stun:stun2.l.google.com:19302',
+                    //     'stun:stun.l.google.com:19302?transport=udp',
+                    // ]
+
+
+                    log('RTCPeerConnection configuration:', configuration);
+                    pc1 = new RTCPeerConnection(configuration);
+                    log('Created local peer connection object pc1');
+                    pc1.addEventListener('icecandidate', e => onIceCandidate(pc1, e));
+                    // pc2 = new RTCPeerConnection(configuration);
+                    log('Created remote peer connection object pc2');
+                    // pc2.addEventListener('icecandidate', e => onIceCandidate(pc2, e));
+                    pc1.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc1, e));
+                    // pc2.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc2, e));
+                    pc1.addEventListener('track', gotRemoteStream);
+                    // pc2.addEventListener('track', gotRemoteStream);
+
+
+                    localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
+                    log('Added local stream to pc1');
+                } catch (e) {
+                    alert(`getUserMedia() error: ${e.name}`);
+                }
+            }
+        }
+
+        async function call() {
+            var callToUsername = callToUsernameInput.value;
+
+            callButton.disabled = true;
+            hangupButton.disabled = false;
+            log('Starting call');
+
+            try {
+                log('pc1 createOffer start');
+
+                if (callToUsername.length > 0) {
+
+                    connectedUser = callToUsername;
+
+                    const offer = await pc1.createOffer(offerOptions);
+                    send({
+                        type: "offer",
+                        offer: offer
+                    });
+                    log('pc1 setLocalDescription start');
+                    try {
+                        await pc1.setLocalDescription(offer);
+                        onSetLocalSuccess(pc1);
+                    } catch (e) {
+                        onSetSessionDescriptionError(e);
+                    }
+                }
+
+                // const offer = await pc1.createOffer(offerOptions);
+                // await onCreateOfferSuccess(offer);
+            } catch (e) {
+                onCreateSessionDescriptionError(e);
+            }
+        }
+
+        function onCreateSessionDescriptionError(error) {
+            log(`Failed to create session description: ${error.toString()}`);
+        }
+
+        async function handleOffer(desc, name) {
+            connectedUser = name;
+            log(`Offer from pc1\n${desc.sdp}`);
+            // log('pc1 setLocalDescription start');
+            // try {
+            //     await pc1.setLocalDescription(desc);
+            //     onSetLocalSuccess(pc1);
+            // } catch (e) {
+            //     onSetSessionDescriptionError();
+            // }
+
+            log('pc2 setRemoteDescription start');
+            try {
+                await pc1.setRemoteDescription(desc);
+                onSetRemoteSuccess(pc1);
+            } catch (e) {
+                onSetSessionDescriptionError();
+            }
+
+            log('pc2 createAnswer start');
+            // Since the 'remote' side has no media stream we need
+            // to pass in the right constraints in order for it to
+            // accept the incoming offer of audio and video.
+            try {
+                const answer = await pc1.createAnswer();
+                log('pc2 setLocalDescription start');
+                try {
+                    await pc1.setLocalDescription(answer);
+                    onSetLocalSuccess(pc1);
+                } catch (e) {
+                    onSetSessionDescriptionError(e);
+                }
+                send({
+                    type: "answer",
+                    answer: answer
+                });
+                // await onCreateAnswerSuccess(answer);
+            } catch (e) {
+                onCreateSessionDescriptionError(e);
+            }
+        }
+
+        function onSetLocalSuccess(pc) {
+            log(`${getName(pc)} setLocalDescription complete`);
+        }
+
+        function onSetRemoteSuccess(pc) {
+            log(`${getName(pc)} setRemoteDescription complete`);
+        }
+
+        function onSetSessionDescriptionError(error) {
+            log(`Failed to set session description: ${error.toString()}`);
+        }
+
+        function gotRemoteStream(e) {
+            if (remoteVideo.srcObject !== e.streams[0]) {
+                remoteVideo.srcObject = e.streams[0];
+                log('pc2 received remote stream');
+
+
+                // const remoteStream = MediaStream();
+                // const remoteVideo = document.querySelector('#remoteVideo');
+                // remoteVideo.srcObject = e.track[0];
+
+                // peerConnection.addEventListener('track', async (event) => {
+                // remoteStream.addTrack(e.track[0], remoteStream);
+                // });
+            }
+        }
+
+        async function handleAnswer(desc) {
+            log(`Answer from pc2:\n${desc.sdp}`);
+            log('pc1 setRemoteDescription start');
+            try {
+                await pc1.setRemoteDescription(desc);
+                onSetRemoteSuccess(pc1);
+            } catch (e) {
+                onSetSessionDescriptionError(e);
+            }
+        }
+
+        // async function onCreateAnswerSuccess(desc) {
+        //     log(`Answer from pc2:\n${desc.sdp}`);
+        //     log('pc2 setLocalDescription start');
+        //     try {
+        //         await pc2.setLocalDescription(desc);
+        //         onSetLocalSuccess(pc2);
+        //     } catch (e) {
+        //         onSetSessionDescriptionError(e);
+        //     }
+        //     log('pc1 setRemoteDescription start');
+        //     try {
+        //         await pc1.setRemoteDescription(desc);
+        //         onSetRemoteSuccess(pc1);
+        //     } catch (e) {
+        //         onSetSessionDescriptionError(e);
+        //     }
+        // }
+
+        async function onIceCandidate(pc, event) {
+            try {
+                // log("other pc 1:",getOtherPc(pc))
+                // await (getOtherPc(pc).addIceCandidate(event.candidate));
+                // onAddIceCandidateSuccess(pc);
+                if (event.candidate) {
+                    send({
+                        type: "candidate",
+                        candidate: event.candidate,
+                        // pc: getOtherPc(pc)
+                    });
+                }
+            } catch (e) {
+                onAddIceCandidateError(pc, e);
+            }
+            log(`${getName(pc)} ICE candidate:\n${event.candidate ? event.candidate.candidate : '(null)'}`);
+        }
+
+        function onAddIceCandidateSuccess(pc) {
+            log(`${getName(pc)} addIceCandidate success`);
+        }
+
+        function handleCandidate(candidate) {
+            log("candi", candidate);
+            // log("other pc 2",pc);
+            // pc.addIceCandidate(new RTCIceCandidate(candidate));
+            pc1.addIceCandidate(candidate)
+        };
+
+        function onAddIceCandidateError(pc, error) {
+            log(`${getName(pc)} failed to add ICE Candidate: ${error.toString()}`);
+        }
+
+        function onIceStateChange(pc, event) {
+            if (pc) {
+                log(`${getName(pc)} ICE state: ${pc.iceConnectionState}`);
+                log('ICE state change event: ', event);
+                log('pc obj:', pc1)
+            }
+        }
+
+        function hangup() {
+            log('Ending call');
+            pc1.close();
+            // pc2.close();
+            pc1 = null;
+            // pc2 = null;
+            hangupButton.disabled = true;
+            callButton.disabled = false;
+        }
+    </script>
+
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="js/main.js" async></script>
+
+    <script src="../../../js/lib/ga.js"></script>
+</body>
+
+</html>
